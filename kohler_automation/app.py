@@ -3,7 +3,9 @@ import pandas as pd
 import io
 import asyncio
 import sys
+import sys
 import os
+import concurrent.futures
 try:
     import tkinter as tk
     from tkinter import filedialog
@@ -89,7 +91,23 @@ elif page == "Folder Scanner":
     st.title("Folder Scanner")
     
     if not TKINTER_AVAILABLE:
-        st.warning("This feature is not available on Streamlit Cloud because it requires access to the local file system (Tkinter). Please run the app locally to use this feature.")
+        st.info("Web Mode: Upload files to list them (Browser security prevents direct folder scanning).")
+        uploaded_files = st.file_uploader("Choose files", accept_multiple_files=True)
+        
+        if uploaded_files:
+            file_data = []
+            for uploaded_file in uploaded_files:
+                file_data.append({
+                    "File Name": uploaded_file.name,
+                    "Size (Bytes)": uploaded_file.size,
+                    "Type": uploaded_file.type
+                })
+            
+            st.session_state['scan_df'] = pd.DataFrame(file_data)
+            st.success(f"Processed {len(uploaded_files)} files.")
+        else:
+            st.session_state['scan_df'] = None
+
     else:
         st.markdown("Scan a folder and its subfolders to list all files with their paths.")
 
@@ -226,61 +244,118 @@ elif page == "PDF Highlighter":
     enable_ocr = st.checkbox("Enable OCR (for scanned files)", value=False)
 
     if uploaded_file and search_text:
+    # Helper function for single page OCR
+    def process_page_ocr(page_num, pdf_bytes, dpi=200):
+        try:
+            # Re-open doc in thread to avoid conflicts
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            page = doc[page_num]
+            
+            # Render page to image (lower DPI for speed, 200 is usually enough for text)
+            pix = page.get_pixmap(dpi=dpi)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            
+            # Convert to grayscale to speed up OCR
+            img = img.convert('L')
+            
+            # Get OCR data
+            ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+            
+            return {
+                "page_num": page_num,
+                "ocr_data": ocr_data,
+                "width": pix.width,
+                "height": pix.height,
+                "rect_width": page.rect.width,
+                "rect_height": page.rect.height
+            }
+        except Exception as e:
+            return {"page_num": page_num, "error": str(e)}
+
+    # Cached function to run OCR in parallel
+    @st.cache_data(show_spinner=False)
+    def get_ocr_data(pdf_bytes, dpi=200):
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        num_pages = len(doc)
+        doc.close()
+        
+        results = []
+        # Use ThreadPoolExecutor for I/O bound tasks (OCR is CPU bound but Tesseract is external process)
+        # Adjust max_workers if needed, default is usually fine
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future_to_page = {
+                executor.submit(process_page_ocr, i, pdf_bytes, dpi): i 
+                for i in range(num_pages)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_page):
+                results.append(future.result())
+                
+        results.sort(key=lambda x: x["page_num"])
+        return results
+
+    if uploaded_file and search_text:
         if st.button("Process PDF"):
             try:
                 with st.spinner("Processing PDF..."):
-                    # Open PDF from memory
-                    pdf_document = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+                    # Open PDF from memory for highlighting
+                    pdf_bytes = uploaded_file.getvalue()
+                    pdf_document = fitz.open(stream=pdf_bytes, filetype="pdf")
                     total_matches = 0
                     
-                    for page_num in range(len(pdf_document)):
-                        page = pdf_document[page_num]
-                        
-                        # 1. Standard Text Search
+                    # 1. Standard Text Search
+                    for page in pdf_document:
                         text_instances = page.search_for(search_text)
-                        
-                        # Add highlights for text matches
                         for inst in text_instances:
                             highlight = page.add_highlight_annot(inst)
                             highlight.update()
                             total_matches += 1
-                        
-                        # 2. OCR Search (if enabled)
-                        if enable_ocr:
-                            try:
-                                # Render page to image (300 DPI for better OCR)
-                                pix = page.get_pixmap(dpi=300)
-                                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                    
+                    # 2. OCR Search (if enabled)
+                    if enable_ocr:
+                        try:
+                            with st.spinner("Running OCR (Cached)..."):
+                                # Get cached OCR data
+                                ocr_results = get_ocr_data(pdf_bytes, dpi=200)
                                 
-                                # Get OCR data with bounding boxes
-                                ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
-                                
-                                n_boxes = len(ocr_data['text'])
-                                for i in range(n_boxes):
-                                    if search_text.lower() in ocr_data['text'][i].lower():
-                                        (x, y, w, h) = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
+                                for res in ocr_results:
+                                    if "error" in res:
+                                        st.warning(f"OCR failed on page {res['page_num'] + 1}: {res['error']}")
+                                        continue
                                         
-                                        # Convert Image coordinates to PDF coordinates
-                                        # PDF units are usually 72 DPI, Image is 300 DPI
-                                        scale_x = page.rect.width / pix.width
-                                        scale_y = page.rect.height / pix.height
-                                        
-                                        pdf_rect = fitz.Rect(
-                                            x * scale_x, 
-                                            y * scale_y, 
-                                            (x + w) * scale_x, 
-                                            (y + h) * scale_y
-                                        )
-                                        
-                                        highlight = page.add_highlight_annot(pdf_rect)
-                                        highlight.update()
-                                        total_matches += 1
-                                        
-                            except pytesseract.TesseractNotFoundError:
-                                st.error("Tesseract OCR is not found. Please install Tesseract and add it to your PATH to use OCR features.")
-                                break # Stop processing pages if OCR is missing
-                            except Exception as e:
-                                st.warning(f"OCR failed on page {page_num + 1}: {e}")
+                                    page_num = res["page_num"]
+                                    ocr_data = res["ocr_data"]
+                                    pix_width = res["width"]
+                                    pix_height = res["height"]
+                                    page_rect_width = res["rect_width"]
+                                    page_rect_height = res["rect_height"]
+                                    
+                                    page = pdf_document[page_num]
+                                    
+                                    n_boxes = len(ocr_data['text'])
+                                    for i in range(n_boxes):
+                                        if search_text.lower() in ocr_data['text'][i].lower():
+                                            (x, y, w, h) = (ocr_data['left'][i], ocr_data['top'][i], ocr_data['width'][i], ocr_data['height'][i])
+                                            
+                                            # Scale coordinates
+                                            scale_x = page_rect_width / pix_width
+                                            scale_y = page_rect_height / pix_height
+                                            
+                                            pdf_rect = fitz.Rect(
+                                                x * scale_x, 
+                                                y * scale_y, 
+                                                (x + w) * scale_x, 
+                                                (y + h) * scale_y
+                                            )
+                                            
+                                            highlight = page.add_highlight_annot(pdf_rect)
+                                            highlight.update()
+                                            total_matches += 1
+                                            
+                        except pytesseract.TesseractNotFoundError:
+                            st.error("Tesseract OCR is not found. Please install Tesseract.")
+                        except Exception as e:
+                            st.error(f"OCR Error: {e}")
 
                     if total_matches > 0:
                         st.success(f"Found and highlighted {total_matches} occurrences.")
