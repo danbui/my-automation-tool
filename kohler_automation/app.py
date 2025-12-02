@@ -4,8 +4,12 @@ import io
 import asyncio
 import sys
 import os
-import tkinter as tk
-from tkinter import filedialog
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    TKINTER_AVAILABLE = True
+except ImportError:
+    TKINTER_AVAILABLE = False
 from scrape_kohler import process_codes
 
 # Fix for Windows Event Loop Policy
@@ -64,7 +68,12 @@ if page == "Kohler Scraper":
 
 elif page == "Folder Scanner":
     st.title("Folder Scanner")
-    st.markdown("Scan a folder and its subfolders to list all files with their paths.")
+    st.title("Folder Scanner")
+    
+    if not TKINTER_AVAILABLE:
+        st.warning("This feature is not available on Streamlit Cloud because it requires access to the local file system (Tkinter). Please run the app locally to use this feature.")
+    else:
+        st.markdown("Scan a folder and its subfolders to list all files with their paths.")
 
     # Ensure scan_df is in session state
     if 'scan_df' not in st.session_state:
@@ -175,7 +184,8 @@ elif page == "Folder Scanner":
         
         with col_d2:
             # Save As Button (Native)
-            st.button("Save to File... (Native)", on_click=save_as_callback)
+            if TKINTER_AVAILABLE:
+                st.button("Save to File... (Native)", on_click=save_as_callback)
 
 elif page == "PDF Highlighter":
     st.title("PDF Highlighter")
