@@ -16,6 +16,24 @@ from scrape_kohler import process_codes
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+# Ensure Playwright browsers are installed (for Streamlit Cloud)
+import subprocess
+try:
+    # Check if we can run playwright
+    subprocess.run(["playwright", "--version"], check=True)
+except (FileNotFoundError, subprocess.CalledProcessError):
+    # If not found or error, try to install
+    # Note: This might need to be 'python -m playwright install chromium'
+    pass
+
+# Install chromium if not already present (brute force check for cloud)
+if not os.path.exists("playwright_installed.flag"):
+    with st.spinner("Installing Playwright browsers... (this runs once)"):
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
+        # Create a flag file to avoid re-running
+        with open("playwright_installed.flag", "w") as f:
+            f.write("installed")
+
 # Page Config
 st.set_page_config(page_title="Kohler Automation", layout="wide")
 
