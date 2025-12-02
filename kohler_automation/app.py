@@ -186,7 +186,11 @@ elif page == "PDF Highlighter":
     from PIL import Image
 
     # Set Tesseract Path explicitly
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    # Set Tesseract Path explicitly if on Windows and path exists
+    tesseract_path = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    if os.path.exists(tesseract_path):
+        pytesseract.pytesseract.tesseract_cmd = tesseract_path
+    # On Linux (Streamlit Cloud), it will use the default 'tesseract' command from PATH
 
     # File Uploader
     uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
