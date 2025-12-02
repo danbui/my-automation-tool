@@ -243,7 +243,7 @@ elif page == "PDF Highlighter":
     search_text = st.text_input("Text to Search & Highlight")
     enable_ocr = st.checkbox("Enable OCR (for scanned files)", value=False)
 
-    if uploaded_file and search_text:
+
     # Helper function for single page OCR
     def process_page_ocr(page_num, pdf_bytes, dpi=200):
         try:
